@@ -1,0 +1,131 @@
+/*
+um modelo de script PL/SQL (com UTL_FILE) que:
+lê um arquivo CSV (entrada.csv) com CPFs (um CPF por linha ou em primeira coluna),
+consulta a tabela tb_cpf para verificar se o CPF existe,
+grava os CPFs encontrados em saida.csv.
+Incluo também instruções para criar o DIRECTORY Oracle e dar permissões.
+*/
+
+--1) Preparação (uma vez, como DBA ou usuário com privilégios)
+-- ajuste '/path/no/servidor' para o diretório do servidor Oracle onde os arquivos ficarão
+/*
+CREATE OR REPLACE DIRECTORY DATA_DIR AS '/path/no/servidor';
+GRANT READ, WRITE ON DIRECTORY DATA_DIR TO SEU_USUARIO;  -- substitua SEU_USUARIO
+*/
+--
+--
+--2) Script PL/SQL (cópia/cole e execute como o usuário que recebeu o GRANT)
+
+DECLARE
+  in_file   UTL_FILE.FILE_TYPE;
+  out_file  UTL_FILE.FILE_TYPE;
+  v_line    VARCHAR2(4000);
+  v_cpf_raw VARCHAR2(100);
+  v_cpf     VARCHAR2(100);
+  v_status  VARCHAR2(100);
+  v_count   NUMBER :=1 ;
+  l_first_line BOOLEAN := TRUE;
+  l_input_filename  CONSTANT VARCHAR2(4000) := 'base_cnpj2.csv';
+  l_output_filename CONSTANT VARCHAR2(4000) := 'base_cnpj2Out.csv';
+  l_dir CONSTANT VARCHAR2(30) := 'ARARAS_FILE_REL'; -- nome do DIRECTORY criado
+  
+BEGIN
+  -- Abre arquivos
+  in_file  := UTL_FILE.FOPEN(l_dir, l_input_filename,  'R', 32767);
+  out_file := UTL_FILE.FOPEN(l_dir, l_output_filename, 'W', 32767);
+
+  -- opcional: escrever cabeçalho no arquivo de saída
+  --UTL_FILE.PUT_LINE(out_file, 'cpf');
+
+  LOOP
+    BEGIN
+      UTL_FILE.GET_LINE(in_file, v_line);
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        EXIT;
+    END;
+
+    -- pula linhas vazias
+    IF TRIM(v_line) IS NULL THEN
+      CONTINUE;
+    END IF;
+
+    -- Se for primeira linha e parecer cabeçalho, ignore
+    IF l_first_line THEN
+      l_first_line := FALSE;
+      IF LOWER(TRIM(v_line)) LIKE 'cpf%' THEN
+        CONTINUE; -- ignora cabeçalho
+      END IF;
+      -- caso não seja cabeçalho, o script processará normalmente a primeira linha abaixo
+    END IF;
+
+    -- separa a primeira coluna (CPF) caso a linha tenha vírgulas
+    -- assume que CPF está na primeira coluna; ajustável conforme seu CSV
+    --v_cpf_raw := REGEXP_SUBSTR(v_line, '^[^,]+');
+    
+     -- assume que CPF está na segunda coluna; ajustável conforme seu CSV
+     v_cpf_raw := Regexp_Substr(v_line, '[^;]+',1, 2);
+
+    -- limpa pontos, hífens, espaços: deixa só dígitos
+    v_cpf := REGEXP_REPLACE(v_cpf_raw, '[^0-9]', '');
+
+    -- se quiser validar tamanho (opcional)
+ /*
+    IF LENGTH(v_cpf) < 11 THEN
+      -- ignora entradas inválidas (ou trate conforme desejado)
+      CONTINUE;
+    END IF;
+*/
+    -- verifica existência na tabela tb_cpf
+    BEGIN
+      --SELECT COUNT(*) INTO v_count FROM tb_cpf WHERE REGEXP_REPLACE(cpf, '[^0-9]','') = v_cpf;
+        --  SELECT lpad(c.cdsj_cgc,12,0)||lpad(c.cdsj_dgt_cgc, 2, 0) FROM cad_pss_jrd c
+      SELECT lpad(c.cdsj_cgc,12,0)||lpad(c.cdsj_dgt_cgc, 2, 0),'SIM' 
+        INTO v_cpf,v_status
+        FROM cad_pss_jrd     c
+       WHERE lpad(c.cdsj_cgc,12,0)||lpad(c.cdsj_dgt_cgc, 2, 0) = v_cpf
+         and rownum <=5;
+      
+      
+      
+    EXCEPTION
+      WHEN OTHERS THEN
+        v_count := 0; -- em caso de erro na consulta, não grava
+    END;
+
+    --IF v_count > 0 THEN
+      -- grava a versão "formatada" ou só dígitos conforme desejar; aqui grava só dígitos
+      UTL_FILE.PUT_LINE(out_file, v_cpf||';'||v_status);
+      dbms_output.put_line(v_cpf||';'||v_status);
+    --END IF;
+
+  END LOOP;
+
+  -- fecha arquivos
+  UTL_FILE.FCLOSE(in_file);
+  UTL_FILE.FCLOSE(out_file);
+
+  DBMS_OUTPUT.PUT_LINE('Processamento finalizado. Arquivo de saída: ' || l_output_filename);
+
+EXCEPTION
+  WHEN UTL_FILE.INVALID_PATH THEN
+    DBMS_OUTPUT.PUT_LINE('Erro: caminho inválido para o DIRECTORY.');
+  WHEN UTL_FILE.INVALID_MODE THEN
+    DBMS_OUTPUT.PUT_LINE('Erro: modo inválido ao abrir arquivo.');
+  WHEN UTL_FILE.INVALID_FILEHANDLE THEN
+    DBMS_OUTPUT.PUT_LINE('Erro: handle inválido.');
+  WHEN UTL_FILE.READ_ERROR THEN
+    DBMS_OUTPUT.PUT_LINE('Erro de leitura.');
+  WHEN UTL_FILE.WRITE_ERROR THEN
+    DBMS_OUTPUT.PUT_LINE('Erro de escrita.');
+  WHEN OTHERS THEN
+    -- tenta fechar arquivos se estiverem abertos
+    BEGIN
+      IF UTL_FILE.IS_OPEN(in_file) THEN UTL_FILE.FCLOSE(in_file); END IF;
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+    BEGIN
+      IF UTL_FILE.IS_OPEN(out_file) THEN UTL_FILE.FCLOSE(out_file); END IF;
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+    DBMS_OUTPUT.PUT_LINE('Erro: ' || SQLERRM);
+END;
+/
